@@ -1,0 +1,13 @@
+# venv e dipendenze
+venv/
+__pycache__/
+*.pyc
+.env
+temp/
+uploads/
+clips/
+
+# IDE
+.vscode/
+.idea/
+*.swp
