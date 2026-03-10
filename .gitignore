@@ -2,10 +2,12 @@
 venv/
 __pycache__/
 *.pyc
+*.pyo
 .env
 temp/
 uploads/
 clips/
+.DS_Store
 
 # IDE
 .vscode/
