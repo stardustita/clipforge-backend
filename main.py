@@ -1,50 +1,89 @@
-# main.py - FIX ULTIMO ERRORE (os.makedirs)
+# main.py — ClipForge AI Backend (Lazy Init + Logging Definitivo)
+import logging
+import traceback
+import os
+import uuid
+import glob
+from pathlib import Path
+
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-import uvicorn
-import os, uuid, glob
-import yt_dlp
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
-from typing import List
+from typing import Optional
+from dotenv import load_dotenv
 
-app = FastAPI(title="ClipForge")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+load_dotenv()
 
-class Clip(BaseModel):
-    start_time: str
-    end_time: str
-    viral_score: int
-    reason: str
+# ============================================================
+# LOGGING DEFINITIVO — visibile nei log Render
+# ============================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger("clipforge")
 
+# ============================================================
+# APP FASTAPI
+# ============================================================
+app = FastAPI(title="ClipForge AI Backend", version="3.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+Path("temp").mkdir(exist_ok=True)
+Path("uploads").mkdir(exist_ok=True)
+Path("clips").mkdir(exist_ok=True)
+
+# ============================================================
+# LAZY INIT GLOBALS
+# ============================================================
 _whisper = None
 _gemini = None
 _video = None
 
+# ============================================================
+# MOCK FALLBACK (solo se servizio reale fallisce)
+# ============================================================
 class MockWhisper:
-    async def transcribe_video(self, path):
-        return "Trascrizione test video"
+    def transcribe_video(self, path: str) -> str:
+        logger.warning("⚠️ WhisperService NON disponibile — uso MOCK")
+        return "00:00 Mock trascrizione — Whisper non caricato correttamente."
 
 class MockGemini:
-    async def find_viral_moments(self, transcript, max_clips=3):
+    def find_viral_moments(self, transcript: str, max_clips: int = 3):
+        logger.warning("⚠️ GeminiService NON disponibile — uso MOCK")
         return [
-            Clip(start_time="00:30", end_time="01:00", viral_score=90, reason="Momento virale"),
-            Clip(start_time="01:45", end_time="02:15", viral_score=85, reason="Hook forte")
+            {"start_time": "00:00", "end_time": "00:30", "viral_score": 0,
+             "reason": "MOCK — Gemini non caricato", "transcript_snippet": transcript[:100]}
         ]
 
 class MockVideo:
-    async def generate_clip(self, input_path, output_path, start, end):
-        open(output_path, 'w').close()  # File vuoto mock
+    def generate_clip(self, video_path: str, output_path: str, start: str, end: str):
+        logger.warning("⚠️ VideoService NON disponibile — creo clip mock vuota")
+        Path(output_path).touch()
 
+# ============================================================
+# LAZY GETTERS CON LOGGING DETTAGLIATO
+# ============================================================
 async def get_whisper():
     global _whisper
     if _whisper is None:
         try:
-            from whisper_service import WhisperService
+            logger.info("⏳ Caricamento WhisperService...")
+            from services.whisper_service import WhisperService
             _whisper = WhisperService()
-            print("Whisper OK")
-        except:
-            print("Whisper mock")
+            logger.info("✅ WhisperService caricato correttamente")
+        except Exception as e:
+            logger.error(f"❌ WhisperService FALLITO: {e}")
+            logger.error(traceback.format_exc())
             _whisper = MockWhisper()
     return _whisper
 
@@ -52,11 +91,13 @@ async def get_gemini():
     global _gemini
     if _gemini is None:
         try:
-            from gemini_service import GeminiService
+            logger.info("⏳ Caricamento GeminiService...")
+            from services.gemini_service import GeminiService
             _gemini = GeminiService()
-            print("Gemini OK")
-        except:
-            print("Gemini mock")
+            logger.info("✅ GeminiService caricato correttamente")
+        except Exception as e:
+            logger.error(f"❌ GeminiService FALLITO: {e}")
+            logger.error(traceback.format_exc())
             _gemini = MockGemini()
     return _gemini
 
@@ -64,68 +105,130 @@ async def get_video():
     global _video
     if _video is None:
         try:
-            from video_service import VideoService
+            logger.info("⏳ Caricamento VideoService...")
+            from services.video_service import VideoService
             _video = VideoService()
-            print("Video OK")
-        except:
-            print("Video mock")
+            logger.info("✅ VideoService caricato correttamente")
+        except Exception as e:
+            logger.error(f"❌ VideoService FALLITO: {e}")
+            logger.error(traceback.format_exc())
             _video = MockVideo()
     return _video
 
-@app.post("/api/youtube")
-async def youtube_pipeline(url: str = Form(...)):
-    fileid = str(uuid.uuid4())
-    videopath = f"temp/{fileid}.%(ext)s"
-    
-    ydl_opts = {
-        "format": "best[height<=720]", 
-        "outtmpl": videopath,
-        "quiet": True
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-    
-    videofiles = glob.glob(f"temp/{fileid}.*")
-    if not videofiles:
-        raise HTTPException(400, "Download fallito")
-    
-    videopath = videofiles[0]
-    
-    whisper = await get_whisper()
-    transcript = await whisper.transcribe_video(videopath)
-    
-    gemini = await get_gemini()
-    clips = await gemini.find_viral_moments(transcript)
-    
-    clips_generated = []
-    videosvc = await get_video()
-    os.makedirs("clips", exist_ok=True)
-    
-    for i, clip in enumerate(clips[:3]):
-        output = f"clips/{fileid}_clip{i}.mp4"
-        await videosvc.generate_clip(videopath, output, clip.start_time, clip.end_time)
-        clips_generated.append(f"/clips/{os.path.basename(output)}")
-    
-    os.remove(videopath)
-    
-    return {
-        "status": "success",
-        "clips": clips_generated
-    }
+# ============================================================
+# ROUTES
+# ============================================================
 
-@app.get("/clips/{filename}")
-async def get_clip(filename: str):
-    filepath = f"clips/{filename}"
-    if not os.path.exists(filepath):
-        raise HTTPException(404, "Clip non trovata")
-    return FileResponse(filepath, media_type="video/mp4")
+@app.get("/")
+def home():
+    return {"status": "online", "message": "ClipForge AI Backend 🔥", "version": "3.0"}
 
 @app.get("/health")
 async def health():
-    return {"status": "OK"}
+    return {
+        "status": "OK",
+        "whisper_loaded": _whisper is not None and not isinstance(_whisper, MockWhisper),
+        "gemini_loaded": _gemini is not None and not isinstance(_gemini, MockGemini),
+        "video_loaded": _video is not None and not isinstance(_video, MockVideo),
+    }
+
+@app.post("/api/youtube")
+async def youtube_endpoint(url: str = Form(...)):
+    logger.info(f"🔄 /api/youtube ricevuto: {url}")
+    try:
+        import yt_dlp
+        file_id = str(uuid.uuid4())
+        temp_dir = Path("temp")
+        outtmpl = str(temp_dir / f"{file_id}.%(ext)s")
+
+        ydl_opts = {
+            "format": "best[height<=480]/best",
+            "outtmpl": outtmpl,
+            "quiet": True,
+            "no_warnings": True,
+            "socket_timeout": 30,
+        }
+
+        logger.info(f"⬇️ Download YouTube: {url}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        video_files = list(temp_dir.glob(f"{file_id}.*"))
+        if not video_files:
+            logger.error("❌ Download fallito — nessun file trovato in temp/")
+            raise HTTPException(400, "Download YouTube fallito")
+
+        video_path = str(video_files[0])
+        size_mb = Path(video_path).stat().st_size / (1024 * 1024)
+        logger.info(f"✅ Video scaricato: {Path(video_path).name} ({size_mb:.1f} MB)")
+
+        whisper = await get_whisper()
+        logger.info("🎤 Avvio trascrizione Whisper...")
+        transcript = whisper.transcribe_video(video_path)
+        logger.info(f"✅ Trascrizione completata: {len(transcript)} caratteri")
+
+        gemini = await get_gemini()
+        logger.info("🧠 Analisi Gemini per momenti virali...")
+        viral_clips = gemini.find_viral_moments(transcript, max_clips=3)
+        logger.info(f"✅ Gemini trovati {len(viral_clips)} clip virali")
+
+        video_svc = await get_video()
+        generated_clips = []
+        for i, clip in enumerate(viral_clips):
+            clip_filename = f"clips/{file_id}_clip{i}.mp4"
+            logger.info(f"✂️ Genero clip {i}: {clip.get('start_time')} → {clip.get('end_time')}")
+            try:
+                video_svc.generate_clip(video_path, clip_filename, clip["start_time"], clip["end_time"])
+                clip_size = Path(clip_filename).stat().st_size / (1024 * 1024) if Path(clip_filename).exists() else 0
+                logger.info(f"✅ Clip {i} generata: {clip_filename} ({clip_size:.2f} MB)")
+                generated_clips.append(f"/clips/{file_id}_clip{i}.mp4")
+            except Exception as clip_err:
+                logger.error(f"❌ Errore generazione clip {i}: {clip_err}")
+                logger.error(traceback.format_exc())
+
+        # Pulizia file temporanei
+        try:
+            Path(video_path).unlink()
+            logger.info("🧹 File temp rimosso")
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "youtube_url": url,
+            "transcript_preview": transcript[:500] + "..." if len(transcript) > 500 else transcript,
+            "clips": viral_clips,
+            "clip_urls": generated_clips,
+            "total_clips": len(generated_clips),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ ERRORE CRITICO /api/youtube: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/clips/{filename}")
+async def download_clip(filename: str):
+    file_path = f"clips/{filename}"
+    if not os.path.exists(file_path):
+        logger.error(f"❌ Clip non trovata: {file_path}")
+        raise HTTPException(404, "Clip non trovata")
+    return FileResponse(path=file_path, media_type="video/mp4", filename=filename)
+
+@app.delete("/api/cleanup/{file_id}")
+async def cleanup(file_id: str):
+    paths = glob.glob(f"uploads/{file_id}.*") + glob.glob(f"clips/{file_id}_*")
+    for p in paths:
+        try:
+            os.remove(p)
+        except Exception:
+            pass
+    logger.info(f"🧹 Cleanup {file_id}: {len(paths)} file rimossi")
+    return {"deleted": len(paths)}
 
 if __name__ == "__main__":
-    os.makedirs("temp", exist_ok=True)
-    os.makedirs("clips", exist_ok=True)
+    import uvicorn
+    logger.info("🚀 Avvio ClipForge Backend v3.0 (Lazy Init + Logging Definitivo)")
     uvicorn.run(app, host="0.0.0.0", port=10000)
