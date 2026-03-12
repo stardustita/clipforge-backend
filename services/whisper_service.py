@@ -8,7 +8,6 @@ class WhisperService:
         print("⏳ Caricamento Whisper (CPU mode)...")
         # CPU + int8 = stabile e veloce su hardware vecchio
         self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
-        )
         print("✅ Whisper pronto (CPU mode)!")
 
     def extract_audio(self, video_path: str, audio_path: str):
