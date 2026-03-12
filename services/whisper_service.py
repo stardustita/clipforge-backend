@@ -7,10 +7,7 @@ class WhisperService:
         """Inizializza Whisper su CPU (compatibile GTX 550 Ti)"""
         print("⏳ Caricamento Whisper (CPU mode)...")
         # CPU + int8 = stabile e veloce su hardware vecchio
-        self.model = WhisperModel(
-            "base", 
-            device="cpu", 
-            compute_type="int8"
+        self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
         )
         print("✅ Whisper pronto (CPU mode)!")
 
